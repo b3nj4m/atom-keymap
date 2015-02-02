@@ -10,7 +10,12 @@
 module.exports =
 class CommandEvent extends CustomEvent
   keyBindingAborted: false
+  keyBindingPending: false
   propagationStopped: false
+
+  pendingKeyBinding: (promise) ->
+    @keyBindingPending = promise
+    promise
 
   abortKeyBinding: ->
     @stopImmediatePropagation()

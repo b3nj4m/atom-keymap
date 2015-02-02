@@ -445,51 +445,65 @@ class KeymapManager
     # partial matches. If we have no partial matches, we dispatch the command
     # immediately. Otherwise we break and allow ourselves to enter the pending
     # state with a timeout.
+    nextMatch = (currentTarget, exactMatches) =>
+      exactMatches = exactMatches or @findExactMatches(exactMatchCandidates, currentTarget)
+      if exactMatches.length is 0
+        return nextMatch(currentTarget.parentElement)
+
+      exactMatch = exactMatches.shift()
+
+      if exactMatch.command is 'native!'
+        @clearQueuedKeystrokes()
+        return
+
+      if exactMatch.command is 'abort!'
+        @clearQueuedKeystrokes()
+        event.preventDefault()
+        return
+
+      if exactMatch.command is 'unset!'
+        return nextMatch(currentTarget.parentElement)
+
+      foundMatch = true
+
+      if partialMatches.length > 0
+        return nextMatch(currentTarget.parentElement)
+
+      @clearQueuedKeystrokes()
+      @cancelPendingState()
+
+      return @dispatchCommandEvent(exactMatch.command, target, event).then (commandEvent) =>
+        if commandEvent.keyBindingAborted
+          return nextMatch(currentTarget, exactMatches)
+        else
+          event = {keystrokes, binding: exactMatch, keyboardEventTarget: target}
+          @emit 'matched', event
+          @emitter.emit 'did-match-binding', event
+          return
+
+    done = =>
+      # If we're at this point in the method, we either found no matches for the
+      # currently queued keystrokes or we found a match, but we need to enter a
+      # pending state due to partial matches. We only enable the timeout of the
+      # pending state if we found an exact match on this or a previously queued
+      # keystroke.
+      if partialMatches.length > 0
+        event.preventDefault()
+        enableTimeout = foundMatch ? @pendingStateTimeoutHandle?
+        @enterPendingState(partialMatches, enableTimeout)
+        event = {keystrokes, partiallyMatchedBindings: partialMatches, keyboardEventTarget: target}
+        @emit 'matched-partially', event
+        @emitter.emit 'did-partially-match-binding', event
+      else
+        event = {keystrokes, keyboardEventTarget: target}
+        @emit 'match-failed', event
+        @emitter.emit 'did-fail-to-match-binding', event
+        @terminatePendingState()
+
     if exactMatchCandidates.length > 0
-      currentTarget = target
-      while currentTarget? and currentTarget isnt document
-        exactMatches = @findExactMatches(exactMatchCandidates, currentTarget)
-        for exactMatch in exactMatches
-          if exactMatch.command is 'native!'
-            @clearQueuedKeystrokes()
-            return
-
-          if exactMatch.command is 'abort!'
-            @clearQueuedKeystrokes()
-            event.preventDefault()
-            return
-
-          if exactMatch.command is 'unset!'
-            break
-
-          foundMatch = true
-          break if partialMatches.length > 0
-          @clearQueuedKeystrokes()
-          @cancelPendingState()
-          if @dispatchCommandEvent(exactMatch.command, target, event)
-            event = {keystrokes, binding: exactMatch, keyboardEventTarget: target}
-            @emit 'matched', event
-            @emitter.emit 'did-match-binding', event
-            return
-        currentTarget = currentTarget.parentElement
-
-    # If we're at this point in the method, we either found no matches for the
-    # currently queued keystrokes or we found a match, but we need to enter a
-    # pending state due to partial matches. We only enable the timeout of the
-    # pending state if we found an exact match on this or a previously queued
-    # keystroke.
-    if partialMatches.length > 0
-      event.preventDefault()
-      enableTimeout = foundMatch ? @pendingStateTimeoutHandle?
-      @enterPendingState(partialMatches, enableTimeout)
-      event = {keystrokes, partiallyMatchedBindings: partialMatches, keyboardEventTarget: target}
-      @emit 'matched-partially', event
-      @emitter.emit 'did-partially-match-binding', event
+      nextMatch(target).then done
     else
-      event = {keystrokes, keyboardEventTarget: target}
-      @emit 'match-failed', event
-      @emitter.emit 'did-fail-to-match-binding', event
-      @terminatePendingState()
+      done()
 
   # Public: Translate a keydown event to a keystroke string.
   #
@@ -606,9 +620,11 @@ class KeymapManager
     else
       @simulateBubblingOnDetachedTarget(target, commandEvent)
 
-    {keyBindingAborted} = commandEvent
-    keyboardEvent.preventDefault() unless keyBindingAborted
-    not keyBindingAborted
+    #TODO allow command event to be 'pending' (attach pending promise to the event?)
+    #TODO make this method always return promise?
+    {keyBindingAborted, keyBindingPending} = commandEvent
+    keyboardEvent.preventDefault() unless keyBindingAborted or keyBindingPending
+    commandEvent.keyBindingPending or Promise.resolve(commandEvent)
 
   # Chromium does not bubble events dispatched on detached targets, which makes
   # testing a pain in the ass. This method simulates bubbling manually.
